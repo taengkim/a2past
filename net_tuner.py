@@ -32,14 +32,18 @@ ADAPTER_VALUES = {
     "TcpAckFrequency": 1,
     "TCPNoDelay": 1,
 }
-# 시스템 전역 튜닝값
-GLOBAL_VALUES = {
-    "NetworkThrottlingIndex": 0xFFFFFFFF,
-}
-# OFF(기본) 시 "값 없음"이 정상인 항목 외에, 알려진 기본값으로 강제 초기화할 때 쓰는 값
-DEFAULT_RESET = {
-    "NetworkThrottlingIndex": 10,  # Windows 기본값
-}
+GAMEDVR_POLICY = r"SOFTWARE\Policies\Microsoft\Windows\GameDVR"
+PRIORITY_CONTROL = r"SYSTEM\CurrentControlSet\Control\PriorityControl"
+
+# 시스템 전역 튜닝값. default=None 이면 강제 초기화 시 값 삭제.
+GLOBAL_TWEAKS = [
+    {"name": "NetworkThrottlingIndex", "subkey": MULTIMEDIA,         "on": 0xFFFFFFFF, "default": 10,   "hex": True},
+    {"name": "SystemResponsiveness",   "subkey": MULTIMEDIA,         "on": 0,          "default": 20,   "hex": False},
+    {"name": "AllowGameDVR",           "subkey": GAMEDVR_POLICY,     "on": 0,          "default": None, "hex": False},
+    {"name": "Win32PrioritySeparation","subkey": PRIORITY_CONTROL,   "on": 0x26,       "default": 2,    "hex": False},
+]
+GLOBAL_ON = {t["name"]: t["on"] for t in GLOBAL_TWEAKS}
+GLOBAL_HEX = {t["name"]: t["hex"] for t in GLOBAL_TWEAKS}
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -88,7 +92,8 @@ def read_dword(subkey, name):
 
 
 def write_dword(subkey, name, value):
-    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, subkey, 0, winreg.KEY_SET_VALUE) as k:
+    # CreateKeyEx: 키가 없으면 생성, 있으면 열기 (GameDVR 정책 경로 대비)
+    with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, subkey, 0, winreg.KEY_SET_VALUE) as k:
         winreg.SetValueEx(k, name, 0, winreg.REG_DWORD, value & 0xFFFFFFFF)
 
 
@@ -210,16 +215,16 @@ def read_current(guid):
     for name in ADAPTER_VALUES:
         v = read_dword(iface, name)
         snap[name] = {"present": v is not None, "data": v}
-    for name in GLOBAL_VALUES:
-        v = read_dword(MULTIMEDIA, name)
-        snap[name] = {"present": v is not None, "data": v}
+    for t in GLOBAL_TWEAKS:
+        v = read_dword(t["subkey"], t["name"])
+        snap[t["name"]] = {"present": v is not None, "data": v}
     return snap
 
 
 def compute_state(guid):
     """'ON' | 'OFF' | 'MIXED' 와 항목별 적용여부 dict."""
     snap = read_current(guid)
-    targets = {**ADAPTER_VALUES, **GLOBAL_VALUES}
+    targets = {**ADAPTER_VALUES, **GLOBAL_ON}
     tuned = {}
     for name, target in targets.items():
         cur = snap[name]
@@ -252,10 +257,12 @@ def apply_on(adapter, log):
             write_dword(iface, name, target)
             applied.append((iface, name))
             log(f"적용: {name} = {target}")
-        for name, target in GLOBAL_VALUES.items():
-            write_dword(MULTIMEDIA, name, target)
-            applied.append((MULTIMEDIA, name))
-            log(f"적용: {name} = 0x{target:08X}")
+        for t in GLOBAL_TWEAKS:
+            write_dword(t["subkey"], t["name"], t["on"])
+            applied.append((t["subkey"], t["name"]))
+            shown = f"0x{t['on']:08X}" if t["hex"] else t["on"]
+            log(f"적용: {t['name']} = {shown}")
+        log("참고: 전역 값(응답성/GameDVR/우선순위)은 게임 재실행 또는 재부팅 후 반영됩니다.")
     except Exception as e:
         log(f"[오류] 적용 실패: {e} — 백업으로 롤백합니다.")
         restore_from_snapshot(snapshot, guid, log)
@@ -283,8 +290,8 @@ def restore_from_snapshot(snapshot, guid, log):
     iface = adapter_iface_path(guid)
     for name in ADAPTER_VALUES:
         _restore_one(iface, name, snapshot.get(name), log)
-    for name in GLOBAL_VALUES:
-        _restore_one(MULTIMEDIA, name, snapshot.get(name), log)
+    for t in GLOBAL_TWEAKS:
+        _restore_one(t["subkey"], t["name"], snapshot.get(t["name"]), log)
 
 
 def _restore_one(subkey, name, entry, log):
@@ -303,9 +310,13 @@ def force_reset(adapter, log):
     for name in ADAPTER_VALUES:
         delete_value(iface, name)
         log(f"초기화: {name} 삭제")
-    for name, default in DEFAULT_RESET.items():
-        write_dword(MULTIMEDIA, name, default)
-        log(f"초기화: {name} = {default}")
+    for t in GLOBAL_TWEAKS:
+        if t["default"] is None:
+            delete_value(t["subkey"], t["name"])
+            log(f"초기화: {t['name']} 삭제")
+        else:
+            write_dword(t["subkey"], t["name"], t["default"])
+            log(f"초기화: {t['name']} = {t['default']}")
     delete_backup(guid)
 
 
@@ -316,7 +327,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME} — 네트워크 레지스트리 튜닝")
-        self.geometry("640x560")
+        self.geometry("640x620")
         self.resizable(False, True)
 
         self.adapters = []
@@ -437,12 +448,15 @@ class App(tk.Tk):
         self.status_var.set(f"상태: {label}")
 
         lines = []
-        for name in list(ADAPTER_VALUES) + list(GLOBAL_VALUES):
+        for name in list(ADAPTER_VALUES) + [t["name"] for t in GLOBAL_TWEAKS]:
             cur = snap[name]
             mark = "O" if tuned[name] else "X"
-            data = "없음" if not cur["present"] else (
-                f"0x{cur['data']:08X}" if name == "NetworkThrottlingIndex" else cur["data"]
-            )
+            if not cur["present"]:
+                data = "없음"
+            elif GLOBAL_HEX.get(name):
+                data = f"0x{cur['data']:08X}"
+            else:
+                data = cur["data"]
             lines.append(f"  [{mark}] {name} = {data}")
         backup = load_backup(a["guid"])
         bstat = "있음" if isinstance(backup, dict) else ("손상" if backup == "corrupt" else "없음")

@@ -16,11 +16,16 @@
 
 ## 튜닝 대상
 
-| 값 | 적용값 | 경로 |
-| --- | --- | --- |
-| `TcpAckFrequency` | `1` | 어댑터 인터페이스 |
-| `TCPNoDelay` | `1` | 어댑터 인터페이스 |
-| `NetworkThrottlingIndex` | `0xFFFFFFFF` | Multimedia SystemProfile |
+| 값 | 적용값 | 경로 | 효과 |
+| --- | --- | --- | --- |
+| `TcpAckFrequency` | `1` | 어댑터 인터페이스 | 지연 ACK 비활성 |
+| `TCPNoDelay` | `1` | 어댑터 인터페이스 | Nagle 비활성 |
+| `NetworkThrottlingIndex` | `0xFFFFFFFF` | Multimedia SystemProfile | 네트워크 스로틀링 해제 |
+| `SystemResponsiveness` | `0` | Multimedia SystemProfile | 게임에 더 많은 처리 할당 |
+| `AllowGameDVR` | `0` | Policies\GameDVR | Xbox 게임 녹화 비활성 |
+| `Win32PrioritySeparation` | `0x26` | PriorityControl | 포그라운드 우선순위 부스트 |
+
+> 전역 값(스로틀링/응답성/GameDVR/우선순위)은 게임 재실행 또는 재부팅 후 반영된다.
 
 자세한 설명은 [요구사항.md](요구사항.md) 참고.
 
